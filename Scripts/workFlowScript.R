@@ -8,7 +8,8 @@ library(maps)
 library(maptools)
 library(sf)
 library(ggmap)
-
+library(GGally)
+library(ggradar)
 
 # 01. Functions -----------------------------------------------------------
 ## 定义归一化函数
@@ -87,7 +88,7 @@ marineEcoData <- './Data/vulnerabilityAssessmentData.xlsx'
 # Import Data
 provinceList <- c(210000, 120000, 130000, 370000,
                   320000, 310000, 330000, 350000,
-                  440000, 450000, 150303) 
+                  440000, 450000, 460000) 
 # Province filter: Liaoning, Hebei, Tianjin, Shandong, Jiangsu, Shanghai,
 # Zhejiang, Fujian, Guangdong, Guangxi
 
@@ -148,21 +149,78 @@ vulFinal <- vulTableCH %>%
     ungroup() 
 
 # Unfinished second axis needed
-vulFinal %>%
+srvPlot <- vulFinal %>%
     full_join(srFinal, by = 'Year') %>%
+    mutate(vulValue = vulValue/3.1) %>%
+    rename(vulnerability = vulValue) %>%
     pivot_longer(-Year) %>%
     ggplot(aes(Year, value, group = name)) +
-    geom_point() +
-    geom_line(aes(linetype = name))
+    geom_point(aes(shape = name), size = 2) +
+    geom_line(aes(group = name)) +
+    scale_y_continuous(name = "Sensitivity, response capacity index",
+                       
+                       # Add a second axis and specify its features
+                       sec.axis = sec_axis(~.*3.1, 
+                                           name="Vulnerability Index")) +
+    theme_classic() +
+    theme(legend.position = 'top', legend.title = element_blank())
+
+# Group vulnerability
+vulnerability <- (summaryWeighTable$Sensitivity * systemWeight[1])/
+    (summaryWeighTable$Response * systemWeight[2])
+cutime <- quantile(vulnerability)
+vulDegree <- c('Low', 'Medium', 'High', 'Vary High')
+vulClassified <- cut(vulnerability, cutime, include.lowest = TRUE,
+                     labels = vulDegree)
+vulTableCH_Cla <- vulTableCH %>%
+    mutate(class = vulClassified)
+
+eastChinaMap10Cla <- vulTableCH_Cla %>%
+    #filter(Year %in% c(2010, 2015)) %>%
+    full_join(eastChinaMap, by = 'GB')
+
+classifyMap <-
+    ggplot(data = eastChinaMap10Cla, aes(geometry = geometry)) +
+    geom_sf(aes(fill = class)) + theme_nothing(legend = T) +
+    facet_wrap( ~ Year, strip.position = 'top', nrow = 1) +
+    theme(
+        legend.title = element_blank(),
+        legend.position = 'bottom',
+        strip.background = element_blank()
+    ) +
+    scale_fill_brewer()
 
 # Rank needed
 scaledIndicator <- scale(X, center = F, scale = T)
-scaledIndicator %*% diag(srWeight)
-prop.table(scaledIndicator %*% diag(srWeight), margin = 1)
+propIndicator <- prop.table(scaledIndicator %*% diag(srWeight),
+                            margin = 1)
+colnames(propIndicator) <- colnames(X)
 
-ggplot(eastChinaMap) +
-    geom_sf() + theme_nothing() +
-    geom_sf_text(aes(label = NAME_PINGY))
+rankTab <- marineIndEco[,1:4] %>%
+    bind_cols(as_tibble(propIndicator)) %>% 
+    select(-GB, -Loc, -Year) %>%
+    group_by(Loc_en) %>%
+    summarise_at(vars(!matches("Loc_en")), mean) %>% 
+    ungroup() %>%
+    select(-Loc_en) %>%
+    t() %>%
+    as_tibble() %>%
+    mutate_all(rank)
 
+marineIndEco[,1:4] %>%
+    bind_cols(as_tibble(propIndicator)) %>% 
+    select(-GB, -Loc, -Year) %>%
+    group_by(Loc_en) %>%
+    summarise_at(vars(!matches("Loc_en")), mean) %>% 
+    ungroup() %>% pull(Loc_en) -> provinNames
+rankSTD <- t(rankTab)
+colnames(rankSTD) <- colnames(propIndicator)
 
+finalRank <- rankSTD %>%
+    as_tibble() %>%
+    mutate(area = provinNames ) 
+
+finalRank %>%
+    group_by(area) %>%
+    write_csv('rank.csv')
 
